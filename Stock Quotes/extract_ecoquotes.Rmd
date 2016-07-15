@@ -1,0 +1,328 @@
+---
+title: "Economática - Extrair Cotações"
+author: "Ennio P Lopes"
+date: "19 de junho de 2016"
+output: pdf_document
+---
+
+Este script tem a finalidade de importar os [\textcolor{blue}{dados de cotações}](https://family-business.prod.eesc.usp.br/owncloud/index.php/apps/files/?dir=%2Fdatabase%2Frawdata%2Fstock_market%2Feconomatica_quotes) exportados da janela Matrixx do Economática no 'R' e exportar um arquivo empilhado e tabulado dos tickers de cotações.
+Os arquivos foram extraídos da base do Economática no formato '.txt', sendo um arquivo por 'ticker' de cotação,  agrupados por bolsa de valores e compactados em arquivos '.zip'.
+As tabelas contem dados de ações do mercado à vista (spot). A frequência das observações é diária, em moeda original e todos os preços e retornos estão ajustados pelas ações corporativas (dividendos, splits, reduções de capital, etc.). Conforme [\textcolor{blue}{dicionário dos dados}](https://family-business.prod.eesc.usp.br/owncloud/index.php/apps/files/ajax/download.php?dir=%2Fdatabase%2Frawdata%2Fstock_market%2Feconomatica_quotes%2F_extractdictionay&files=Dicion%C3%A1rio%20de%20Dados%20-%20economatica_quotes.pdf).
+
+#### Pacotes necessários para o processo:
+- _'dplyr'_  
+- _'readr'_  
+- _'lubridate'_  
+- _'data.table'_  
+  
+Para realizar a verificação, carregar ou instalar os pacotes pode ser utilizado o código:
+```{r, eval=F}
+if (any(grepl("dplyr",installed.packages()[,1]))) {
+      library(dplyr)
+} else {
+      install.packages("dplyr") ; library(dplyr)
+}
+
+if (any(grepl("readr",installed.packages()[,1]))) {
+      library(readr)
+} else {
+      install.packages("readr")
+      library(readr)
+}
+if (any(grepl("lubridate",installed.packages()[,1]))) {
+      library(lubridate)
+} else {
+      install.packages("lubridate")
+      library(lubridate)
+}
+
+if (any(grepl("data.table",installed.packages()[,1]))) {
+      library(data.table)
+} else {
+      install.packages("data.table")
+      library(data.table)
+}
+```
+
+##Identificação dos arquivos
+No objeto *zipfile*  estará atribuido o caminho do arquivo '.zip' de referencia da bolsa que vamos importar:
+```{r, eval=F}
+zipfile <- choose.files()
+```
+
+O objeto *file_list* tem a finalidade de listar os nomes dos arquivos textos (*'.txt'*) e os *ids* (ou *tickers*) das cotações que serão importados:
+```{r, eval=F}
+file_list <- unzip(zipfile = zipfile, list = T)["Name"]
+file_list <- as.character(file_list[1:nrow(file_list),"Name"])
+name <- data.frame(file_list,stringsAsFactors = F)
+name$id <- file_list %>%
+      sub(pattern = strtrim(file_list, 38)[1], replacement = "") %>%
+      sub(pattern = ".txt",replacement = "")
+```
+
+##Importação dos arquivos no R
+Os arquivos serão importados pelo *'for' loop* abaixo. O código importa um arquivo por vez dos listados em *'file_list'* e os empilha em um objeto chamado *'quotes'*. Portanto no final desta rotina tem-se um *dataframe* com as variáveis em cada coluna e com todas as empresas listadas empilhadas.  
+Este processo pode demorar:
+```{r, eval=F}
+for (file in file_list) {
+      if (!exists("quotes")) {
+            quotes <-
+                  mutate(mutate(
+                        as.data.frame(
+                              read_csv2(unz(zipfile,file),
+                                        na = "-", skip = 4,
+                                        col_types = "ccccccccccccccccccccc",
+                                        n_max = 0
+                                        )
+                        )
+                        , id = name$id[name$file_list == file])
+                        , ticker = as.character(read_csv2(unz(zipfile,file),
+                                                          na = "-", skip = 4)[1,2])
+                  )
+            colnames(quotes) <- c(names(quotes)[1:9],
+            "Close|adj by CA's|Inf",
+            names(quotes)[11:23])
+      }
+      
+      if (exists("quotes")) {
+            temp_quotes <-
+                  mutate(mutate(
+                        as.data.frame(
+                              read_csv2(unz(zipfile,file),
+                                        na = "-", skip = 4,
+                                        col_types = "ccccccccccccccccccccc"
+                                        )[-1,]
+                        )
+                        , id = name$id[name$file_list == file])
+                        , ticker = as.character(read_csv2(unz(zipfile,file),
+                                                          na = "-", skip = 4)[1,2])
+                  )
+            colnames(temp_quotes) <- c(names(temp_quotes)[1:9],
+            "Close|adj by CA's|Inf",
+            names(temp_quotes)[11:23])
+            
+            for (h in unique(temp_quotes$ticker)) {
+                  unq <- temp_quotes[temp_quotes$ticker == h,]
+                  if (sum(is.na(unq$`Close|adj by CA's|orig currency`)) == nrow(unq)) {
+                        temp_quotes <- filter(temp_quotes, ticker != h)
+                        rm(unq)
+                  } else {rm(unq)}
+            }
+            
+            quotes <- rbind(quotes, temp_quotes)
+            rm(temp_quotes)
+      }
+}
+```
+
+##Verificação
+Importante visualizar alguns dados aleatórios e comparar com a base original.
+```{r, eval=F}
+print(quotes[sample(1:nrow(quotes),3),])
+```
+
+Após a importação é realizado uma verificação para certificar que todos os arquivos do 'file_list' foram importados, com o cruzamento do nome dos arquivos e do 'id' gerado no *dataframe*:
+```{r, eval=F}
+if (length(unique(quotes$ticker[quotes$id != quotes$ticker])) == 0) {
+      quotes <- select(quotes, -id)
+      print("Ticker and ID are the same, id column was removed")
+} else {
+      print(paste(c("Check the diferences between ticker and id columns: ",
+                    unique(quotes$ticker[quotes$id != quotes$ticker]))))
+}
+```
+
+##Formatação
+Esta parte é para formatação das variáveis e padronização dos nomes (cabeçalhos). Por padrão será utilizado somente letras minúsculas, sem espaço e o mais breve possível.
+
+- __Renomear cabeçalhos__:
+```{r, eval=F}
+cname <- c(
+      "Date",
+      "Close|unadj by CA's|orig currency",
+      "Open|unadj by CA's|orig currency",
+      "Low|unadj by CA's|orig currency",
+      "High|unadj by CA's|orig currency",
+      "Average|unadj by CA's|orig currency",
+      "Divid per Share|1 days|orig currency",
+      "Close|adj by CA's|orig currency",
+      "Close|adj by CA's|in US Dollars",
+      "Close|adj by CA's|Inf",
+      "Return|of close|in 1 day|orig currency|adj by CA's",
+      "Return|of close|in 1 day|in US Dollars|adj by CA's",
+      "Return|of close|in 1 day|customized|adj by CA's",
+      "#Trades",
+      "#Shares|adj by CA's",
+      "Stock Liquidity|1 days|orig currency",
+      "Stock Liquidity|1 years|orig currency",
+      "Negotiability|1 days|orig currency",
+      "Negotiability|1 years|orig currency",
+      "Presence|1 months",
+      "Presence|1 years",
+      "ticker")
+tidyname <- c(
+      "date",
+      "close",
+      "open",
+      "low",
+      "high",
+      "average",
+      "dividends",
+      "closeadj",
+      "closeUS",
+      "closeInf",
+      "return",
+      "returnUS",
+      "returnInf",
+      "trades",
+      "shares",
+      "liquidityd",
+      "liquidityy",
+      "negotiabilityd",
+      "negotiabilityy",
+      "presencem",
+      "presencey",
+      "ticker")
+for (i in cname) {
+      if (!exists("ref")){
+            ref <- as.data.frame(grep(pattern = i, x = names(quotes), fixed = T))
+      }
+      if (exists("ref")){
+            temp_ref <- as.data.frame(grep(pattern = i, x = names(quotes), fixed = T))
+            ref <- rbind(ref, temp_ref)
+            rm(temp_ref)
+      }
+}
+ref <- ref[-1,]
+tidyname <- as.character(arrange(as.data.frame(tidyname), ref)[,1])
+colnames(quotes) <- tidyname
+rm(ref,i,tidyname,cname)
+```
+
+- __Missing Values__:
+```{r, eval=F}
+quotes[quotes == "-"] = NA
+```
+
+- __Resumo dos dados__:
+```{r, eval=F}
+str(quotes)
+head(quotes)
+tail(quotes)
+```
+
+## Verificação de consistência e exame dos dados
+O principal objetivo deste tópico é verificar se existem inconsistências de importação, nas quais geraram divergênias entre a base original (_rawdata_) e o objeto criado com as cotações e demais variáveis empilhadas das diversas empresas. Ainda será gerado algumas informações para um exame do conteúdo do objeto a fim de obter uma certificação final antes de gerar os dados agrupados em um único arquivo.
+
+1. __Verificar a quantidade de _tickers_:__  
+Esta rotina verifica se a quantidade de _tickers_ do arquivo '.zip' é a mesma do objeto criado ('quotes'):
+```{r, eval=F}
+import <- length(unique(quotes$ticker))
+tzip <- nrow(unzip(zipfile, list = T))
+if (import == tzip) {
+      print("Total files in .zip equal to total tickers imported in quotes data frame")
+      rm(import, tzip, zipfile)
+} else {
+      print(paste(c("check the diferences in total tickers imported (equal to ",
+                    import,
+                    ") and the number of files in the zip archive (equal to ",
+                    tzip,")"), collapse = NULL))
+}
+```
+2. __Verificar os dados com o arquivo de cadastro__  
+Para realizar esta verificação é preciso utilizar o arquivo .txt gerado com as informações do cadastro dos ativos contidos Economática (pasta _economatica-registry_) da bolsa de valores em questão.
+```{r, eval=F}
+cara <- read.csv2(choose.files(),sep = ";",dec =",",na.strings = "-", skip = 4, 
+                  stringsAsFactors = F)
+cara <- select(cara, 
+               Name,Country.of.Origin,
+               Type.of.Asset,
+               Ticker,
+               Exchange,
+               Active...Cancelled,
+               Price.Series.Currency,
+               Class,
+               Series.Start.Date)
+colnames(cara) <- c("name",
+                    "origincountry",
+                    "assettype",
+                    "ticker",
+                    "exchange",
+                    "active",
+                    "origcurrency",
+                    "class",
+                    "stdate")
+print(paste(c("The variables will be merged for the exchange: ",
+              unique(cara$exchange))), quote=F)
+merged <- merge.data.frame(quotes, cara, 
+                           by.x = "ticker", by.y = "ticker", 
+                           all.y = F, all.x = T)
+if (nrow(merged) == nrow(quotes)) {
+      quotes <- merged
+      rm(merged, cara)
+      print("Initial quotes imported data match with the merged data, 
+            merged was renamed to quotes")
+} else {
+      print(paste(c("check dimension difference between merged and quotes:",
+                    nrow(merged) - nrow(quotes))),quote = F)
+}
+```
+3. __Verificar duplicados__  
+Busca por linhas duplicadas na tabela:
+```{r, eval=F}
+qindex <- paste(quotes$ticker,quotes$date,sep = "_")
+if (length(qindex[duplicated(qindex)]) == 0) {
+      rm(qindex)
+      print("no duplicated rows")
+} else {
+      print("check for ducplicated rows")
+      qindex[duplicated(qindex)]
+}
+```
+4. __Exame da bolsa de valores__
+```{r, eval=F}
+unique(quotes$exchange)
+```
+5. __Exame das datas__
+```{r,eval=F}
+d <- quotes[,c("ticker","date")]
+d$date2 <- as.Date(d$date,"%d/%m/%Y")
+table(year(d$date2))
+hist(year(d$date2))
+```
+      ** Dados mais antigos (data mínima):
+```{r,eval=F}
+tmin <- filter(quotes, date == filter(d,date2 == min(d$date2))[,"date"])
+unique(tmin$ticker)
+head(filter(quotes, ticker == tmin[,"ticker"]),5)
+rm(tmin)
+```
+      ** Dados mais recentes (data máxima):
+```{r,eval=F}
+tmax <- filter(quotes, date == filter(d,date2 == max(d$date2))[,"date"])
+unique(tmax$ticker)
+tail(filter(quotes, ticker == tmax[,"ticker"]),5)
+rm(tmax,d)
+```
+      ** Se existem dados com datas inconsistentes:
+```{r,eval=F}
+quotes$date2 <- as.Date(quotes$date, format = "%d/%m/%Y")
+quotes <- filter(quotes,
+                 date2 <= "2015-12-31" &
+                 date2 >= min(
+                       min(as.Date(quotes[!is.na(quotes$close),"date"], 
+                                   format = "%d/%m/%Y")),
+                       min(as.Date(quotes$stdate,format="%d/%m/%Y"), na.rm = T)))
+quotes <- select(quotes,-date2)
+```
+
+
+## Exportação
+A geração do arquivo _'.csv'_ será feita com a função `write.csv2()`, utilizando como separador de decimal a vírgula (','):
+```{r, eval=F}
+write.csv2(quotes, file = choose.files(), row.names = F, na = "")
+rm(list = ls())
+```
+
+#### Avaliação e tratamento
+Após a importação dos dados brutos é realizado uma verificação e avaliação com dados externos e feita uma limpeza de dados vazios e tratamento de missing values. Esta etapa foi dividida em um arquivo para cada base de dados para facilitar o acompanhamento nos arquivos [\textcolor{blue}{'treatment'}](https://family-business.prod.eesc.usp.br/owncloud/index.php/apps/files/?dir=%2Fdatabase%2Ftidydata%2Fstock_market%2F_extract_scripts).

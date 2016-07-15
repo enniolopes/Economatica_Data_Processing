@@ -1,0 +1,186 @@
+---
+title: "Relatório dos dados - Stock Quotes BVC Colômbia"
+author: "Ennio P Lopes"
+date: "07 de julho de 2016"
+output: pdf_document
+---
+
+Esta rotina realiza uma limpeza e gera uma série de dados para verificação de consistência dos dados extraídos a partir do código [\textcolor{blue}{extract ecoquotes}](https://family-business.prod.eesc.usp.br/owncloud/index.php/apps/files/ajax/download.php?dir=%2Fdatabase%2Ftidydata%2Fstocks_quotes%2Fextract_scripts&files=extract_ecoquotes.pdf) das informações de cotações do mercado de ações das diversas bolsas contidas no Economatica(R). Ao final optou-se por substituir o arquivo gerado anteriormente (em extract_ecoquotes) mantendo apenas uma tabela tabulada para a BVC com os dados limpos.
+São retirados dados das séries que apresentam menos de 252 observações, ou seja, ativos que tiveram menos de 1 ano de cotação. As informações das variáveis estão contidas no [\textcolor{blue}{dicionário de dados}](https://family-business.prod.eesc.usp.br/owncloud/index.php/apps/files/ajax/download.php?dir=%2Fdatabase%2Ftidydata%2Fstocks_quotes%2Fextract_scripts&files=dictionary_COL_BVC.pdf).
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(messages = FALSE, warning = FALSE)
+```
+```{r,include=FALSE}
+if (any(grepl("dplyr",installed.packages()[,1]))) {
+      library(dplyr)
+} else {
+      install.packages("dplyr") ; library(dplyr)
+}
+if (any(grepl("lubridate",installed.packages()[,1]))) {
+      library(lubridate)
+} else {
+      install.packages("lubridate")
+      library(lubridate)
+}
+if (any(grepl("pander",installed.packages()[,1]))) {
+      library(pander)
+} else {
+      install.packages("pander") ; library(pander)
+}
+```
+  
+* __Leitura dos dados__:  
+Foi selecionado o arquivo ".csv" gerado a partir do processo do código [\textcolor{blue}{extract ecoquotes}](https://family-business.prod.eesc.usp.br/owncloud/index.php/apps/files/ajax/download.php?dir=%2Fdatabase%2Ftidydata%2Fstocks_quotes%2Fextract_scripts&files=extract_ecoquotes.pdf).  
+```{r, include=FALSE}
+quotes <- read.csv2(choose.files(), header = T, na="", dec=",", stringsAsFactors = F)
+```
+```{r,include=FALSE}
+str(quotes)
+```
+  
+  
+#Limpeza
+* __Formatação__  
+```{r}
+quotes$date <- as.Date(quotes$date, "%d/%m/%Y")
+quotes$stdate <- as.Date(quotes$stdate, "%d/%m/%Y")
+```
+  
+* __Data inicial__: São utilizados todos os dados disponíveis, porém optou-se em iniciar a série de dados de cada ticker inicia-se a partir da segunda cotação (após IPO).
+```{r}
+table(year(quotes$date))
+for (h in unique(quotes$ticker)) {
+      unq <- filter(quotes, ticker == h)
+      unq <- filter(unq, date > min(unq[!is.na(unq$close),"date"]))
+      unq <- filter(unq, date >= min(unq[!is.na(unq$close),"date"]))
+      quotes <- filter(quotes, ticker != h)
+      quotes <- rbind(quotes,unq)
+      rm(unq)
+}
+table(year(quotes$date))
+```
+  
+* __Quantidade amostral__:
+Será mantido apenas os tickers que contém mais de 252 observações de cotações de fechamento (1 ano de cotação)
+```{r}
+for (h in unique(quotes$ticker)) {
+      uniq <- quotes[quotes$ticker == h,]
+      if (sum(!is.na(uniq$close)) <= 252) {
+            quotes <- filter(quotes, ticker != h)
+            rm(uniq)
+      } else { rm(uniq) }
+}
+rm(h)
+hist(year(quotes$date), main = "Observações por ano", 
+     ylab = "Frequência", xlab = "Ano", col = 3)
+table(year(quotes$date))
+```
+  
+  
+#Resumo dos Dados
+  
+* __Tickers__:  
+Quantidade de tickers:
+```{r}
+length(unique(quotes$ticker))
+```
+  
+* __Missing Values:__  
+Quantidades de linhas incompletas:  
+```{r}
+sum(!complete.cases(quotes))
+sum(!complete.cases(quotes))/nrow(quotes)
+```
+Quantidades de missing na variável close e total da amostra por ticker:  
+```{r}
+quotes$missing <- is.na(quotes$close)
+miss <- merge(
+      merge(x = aggregate(quotes$missing, by=list("ticker"=quotes$ticker), FUN=sum),
+            y= aggregate(!quotes$missing, by=list("ticker"=quotes$ticker), FUN=sum),
+            by.x = "ticker", by.y = "ticker"),
+      aggregate(quotes$missing, by=list("ticker"=quotes$ticker), FUN=length),
+      by.x = "ticker", by.y = "ticker") 
+colnames(miss) <- c("Ticker", "Missing", "Not Missing", "Total Sample")
+pander(miss)
+rm(miss)
+quotes <- select(quotes,-missing)
+```
+
+* __Tipo de ativo__  
+Tabela somente dos ativos diferentes de ações (stocks):  
+```{r pander}
+if (nrow(filter(quotes, assettype != "Stock")) == 0) {
+      print("There is only stocks on data frame")
+} else {
+      pander(unique(
+            filter(quotes, 
+                   assettype!="Stock")[,c("ticker",
+                                          "exchange",
+                                          "origincountry",
+                                          "assettype",
+                                          "active")]))
+}
+```
+* __Exame do país de origem__  
+Tabela somente dos ativos com país de origem diferente do país da bolsa:  
+```{r}
+unique(quotes$origincountry)
+if (all(unique(quotes$origincountry) == "CO")) {
+      print("There is only stocks from the same country of the Exchange")
+} else {
+      pander(unique(filter(quotes, origincountry != "CO")[,c("ticker",
+                                                             "exchange",
+                                                             "origincountry",
+                                                             "assettype",
+                                                             "active")]))
+}
+```
+Bolsa de valores:
+```{r}
+unique(quotes$exchange)
+```
+* __Exame das cotações inativas__  
+```{r}
+if (nrow(filter(quotes, active != "active")) == 0) {
+      print("There is only active tickers")
+} else {
+      pander(unique(filter(quotes, active != "active")[,c("active","ticker","exchange")]))
+}
+```
+  
+* __Exame amostral__
+Amostra de 5 observações aleatórias para comparação com dados externos:
+```{r}
+rbind(quotes[complete.cases(quotes),][sample(1:nrow(quotes[complete.cases(quotes),]),2),],
+quotes[!complete.cases(quotes),][sample(1:nrow(quotes[!complete.cases(quotes),]),2),],
+quotes[sample(1:nrow(quotes),1),])
+```
+```{r,eval=F}
+#Opção de exportar arquivo da amostra:
+write.csv2(
+      rbind(
+            quotes[complete.cases(quotes),][sample(1:nrow(quotes[complete.cases(quotes),]),5),],
+            quotes[!complete.cases(quotes),][sample(1:nrow(quotes[!complete.cases(quotes),]),5),],
+            quotes[sample(1:nrow(quotes),5),]),
+      file = choose.files(),
+      row.names = F, na = "")
+```
+Média das variáveis: closeadj, closeInf, return, returnInf, trades"  
+```{r}
+      pander(t(as.data.frame(sapply(split(quotes[,c("closeadj",
+                                   "closeInf",
+                                   "return",
+                                   "returnInf",
+                                   "trades")],
+                         as.factor(quotes$ticker)),
+                   FUN = colMeans,
+                   na.rm=T))))
+```
+
+
+* __Gravar arquivo__
+```{r}
+write.csv2(quotes, file = "COL_BVC.csv", row.names = F, na = "")
+```
